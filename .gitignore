@@ -1,0 +1,5 @@
+/dist/
+*.samepack.tar
+*.samepack.tar.gz
+*.samepack.tgz
+*.samepack.zip

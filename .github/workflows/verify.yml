@@ -1,0 +1,62 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-pack:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Unit and CLI tests
+        run: go test ./...
+      - name: Static analysis
+        run: go vet ./...
+      - name: Prove the empty dependency graph
+        shell: bash
+        run: |
+          go list -m all | tee module-list.txt
+          test "$(wc -l < module-list.txt)" -eq 1
+      - name: Build and pack twice
+        shell: bash
+        run: |
+          go build -trimpath ./cmd/samepack
+          mkdir -p proof
+          go run ./cmd/samepack pack --output "proof/${{ runner.os }}-a.tar.gz" ./demo/release-v1
+          touch -t 203801190314 ./demo/release-v1/README.txt
+          go run ./cmd/samepack pack --output "proof/${{ runner.os }}-b.tar.gz" ./demo/release-v1
+          cmp "proof/${{ runner.os }}-a.tar.gz" "proof/${{ runner.os }}-b.tar.gz"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: proof-${{ runner.os }}
+          path: proof/${{ runner.os }}-a.tar.gz
+          if-no-files-found: error
+
+  cross-os-proof:
+    needs: test-and-pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: proof-Windows
+          path: proof/windows
+      - uses: actions/download-artifact@v8
+        with:
+          name: proof-Linux
+          path: proof/linux
+      - name: Prove Windows and Linux archives are byte-identical
+        run: |
+          sha256sum proof/windows/Windows-a.tar.gz proof/linux/Linux-a.tar.gz
+          cmp proof/windows/Windows-a.tar.gz proof/linux/Linux-a.tar.gz
