@@ -49,6 +49,9 @@ func Pack(sourceDir, output, format string) (Snapshot, error) {
 			_ = os.Remove(tempName)
 		}
 	}()
+	if err := temp.Chmod(0o644); err != nil {
+		return Snapshot{}, fmt.Errorf("set output permissions: %w", err)
+	}
 
 	switch format {
 	case "tar":
@@ -67,7 +70,7 @@ func Pack(sourceDir, output, format string) (Snapshot, error) {
 	if err := temp.Close(); err != nil {
 		return Snapshot{}, fmt.Errorf("close output: %w", err)
 	}
-	if err := replaceFile(tempName, output); err != nil {
+	if err := publishFile(tempName, output); err != nil {
 		return Snapshot{}, err
 	}
 	ok = true
@@ -279,9 +282,12 @@ func normalizeFormat(format, output string) (string, error) {
 	return format, nil
 }
 
-func replaceFile(source, destination string) error {
-	if err := os.Rename(source, destination); err != nil {
+func publishFile(source, destination string) error {
+	if err := os.Link(source, destination); err != nil {
 		return fmt.Errorf("publish output: %w", err)
+	}
+	if err := os.Remove(source); err != nil {
+		return fmt.Errorf("remove temporary output: %w", err)
 	}
 	return nil
 }

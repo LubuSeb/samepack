@@ -66,6 +66,7 @@ the payload paths underneath them.
 - Absolute paths, parent traversal, backslashes, duplicate names, case-colliding names, oversized entries, and unsupported special entries are rejected.
 - Packing accepts regular files and directories. Symbolic links and special files are rejected rather than interpreted differently across operating systems.
 - Output must be outside the source directory, and Samepack refuses to overwrite an existing archive.
+- Final publication uses a same-directory hard link so no-overwrite is atomic; the output filesystem must support hard links.
 - Samepack identifies content changes; it does not authenticate who produced an archive. Sign the published SHA-256 through your normal release process.
 
 ## Verify

@@ -14,7 +14,7 @@ Samepack has no third-party runtime or test dependencies. These are real design 
 | Canonical content root | a Merkle-tree package | `crypto/sha256` plus length-prefixed framing | Length prefixes make the digest input unambiguous without a serialization dependency. |
 | Machine-readable output | a JSON helper | `encoding/json` | Typed structs already provide stable field names and arrays. |
 | Cross-platform path policy | a safe-path package | `path`, `filepath`, and explicit validation | Archive paths and host paths have different semantics, so the boundary is visible in code. |
-| Atomic output | an atomic-file package | `os.CreateTemp`, `File.Sync`, and `os.Rename` | A failed pack never leaves a completed-looking artifact. |
+| Atomic, no-overwrite output | an atomic-file package | `os.CreateTemp`, `File.Sync`, and `os.Link` | A failed pack never leaves a completed-looking artifact, and publication cannot replace a racing destination. |
 | Test fixtures and assertions | Testify and fixture packages | `testing`, `archive/tar`, `archive/zip`, and ordinary helpers | The tests construct adversarial archives directly and use no hidden machinery. |
 
 ## Deliberate limits

@@ -264,6 +264,23 @@ func TestPackRejectsOutputInsideSourceAndOverwrite(t *testing.T) {
 	}
 }
 
+func TestPublishFileCannotReplaceRacingDestination(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "temporary")
+	destination := filepath.Join(root, "release.tar")
+	mustWrite(t, source, "new archive")
+	mustWrite(t, destination, "existing archive")
+	if err := publishFile(source, destination); err == nil {
+		t.Fatal("expected exclusive publication to fail")
+	}
+	if body := string(mustRead(t, destination)); body != "existing archive" {
+		t.Fatalf("destination was replaced: %q", body)
+	}
+	if body := string(mustRead(t, source)); body != "new archive" {
+		t.Fatalf("temporary output was lost: %q", body)
+	}
+}
+
 type fixtureEntry struct {
 	name    string
 	body    string
