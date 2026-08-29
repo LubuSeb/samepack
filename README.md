@@ -17,6 +17,8 @@ CONTENT CHANGED — 1 added, 0 removed, 1 modified path(s)
 
 This project is being built for the 2026 Zero Dependency Hackathon, Track A: Developer Tools & CLI.
 
+AI-assisted development: ChatGPT/Codex was used as development tooling.
+
 ## Build
 
 ```sh
