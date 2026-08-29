@@ -21,6 +21,8 @@ This project is being built for the 2026 Zero Dependency Hackathon, Track A: Dev
 
 AI-assisted development: ChatGPT/Codex was used as development tooling.
 
+[Watch the 3:49 proof-first demo](https://github.com/LubuSeb/samepack/releases/download/v0.1.0/samepack-demo-v0.1.0.mp4).
+
 ## Build
 
 Download a standalone Windows, Linux, or macOS binary plus its checksum from
