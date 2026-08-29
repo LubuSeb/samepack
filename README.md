@@ -54,6 +54,7 @@ the payload paths underneath them.
 
 - [`CASE_STUDIES.md`](CASE_STUDIES.md) records checks against real GitHub release
   archives, including one compatibility bug the check exposed and fixed.
+- [`DEMO.md`](DEMO.md) is the complete five-minute judge flow.
 - [`REPRODUCIBLE.md`](REPRODUCIBLE.md) records byte-identical output from the
   Windows and Linux executables.
 - [`STDLIB.md`](STDLIB.md) documents 12 concrete standard-library substitutions.
