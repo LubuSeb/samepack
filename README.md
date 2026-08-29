@@ -44,7 +44,7 @@ samepack compare --json release-a.zip release-b.zip
 samepack inspect release.tar.gz
 ```
 
-`compare` exits `0` when content is identical, even if packaging metadata differs. It exits `3` when content changed and prints every added, removed, or modified path. Invalid or unsafe archives exit `1`.
+`compare` exits `0` when content is identical, even if packaging metadata differs. It exits `3` when content changed and prints up to 50 added, removed, or modified paths. Use `--max-changes 0` for every path; JSON output is never truncated. Invalid or unsafe archives exit `1`.
 
 When two release archives use different single top-level directories (for
 example `app-1.0/` and `app-1.1/`), Samepack ignores those wrappers and compares

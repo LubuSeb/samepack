@@ -32,8 +32,10 @@ jobs:
       - name: Build and pack twice
         shell: bash
         run: |
-          go build -trimpath ./cmd/samepack
           mkdir -p proof
+          go build -trimpath -o proof/samepack-a ./cmd/samepack
+          go build -trimpath -o proof/samepack-b ./cmd/samepack
+          cmp proof/samepack-a proof/samepack-b
           go run ./cmd/samepack pack --output "proof/${{ runner.os }}-a.tar.gz" ./demo/release-v1
           touch -t 203801190314 ./demo/release-v1/README.txt
           go run ./cmd/samepack pack --output "proof/${{ runner.os }}-b.tar.gz" ./demo/release-v1

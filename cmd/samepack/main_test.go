@@ -54,6 +54,22 @@ func TestRunPackDefaultsOutsideSource(t *testing.T) {
 	}
 }
 
+func TestPrintComparisonBoundsLargeHumanOutput(t *testing.T) {
+	comparison := archiveio.Comparison{
+		Classification: "content_changed",
+		Added:          []string{"a", "b"},
+		Removed:        []string{"c"},
+	}
+	var output bytes.Buffer
+	printComparison(&output, comparison, 2)
+	if strings.Contains(output.String(), "- c") {
+		t.Fatalf("output exceeded change limit: %s", output.String())
+	}
+	if !strings.Contains(output.String(), "1 more changed path") {
+		t.Fatalf("truncation was not explained: %s", output.String())
+	}
+}
+
 func mustWriteCLI(t *testing.T, filename, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {

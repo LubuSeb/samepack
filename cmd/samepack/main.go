@@ -85,7 +85,12 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("compare", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
+	maxChanges := flags.Int("max-changes", 50, "maximum changed paths to print; 0 shows all")
 	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+	if *maxChanges < 0 {
+		fmt.Fprintln(stderr, "samepack compare: --max-changes cannot be negative")
 		return 1
 	}
 	if flags.NArg() != 2 {
@@ -108,7 +113,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 	} else {
-		printComparison(stdout, comparison)
+		printComparison(stdout, comparison, *maxChanges)
 	}
 	if comparison.ContentIdentical {
 		return 0
@@ -144,7 +149,7 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func printComparison(w io.Writer, result archiveio.Comparison) {
+func printComparison(w io.Writer, result archiveio.Comparison, maxChanges int) {
 	switch result.Classification {
 	case "byte_identical":
 		fmt.Fprintln(w, "BYTE IDENTICAL — the archives have the same SHA-256")
@@ -162,14 +167,32 @@ func printComparison(w io.Writer, result archiveio.Comparison) {
 	for _, reason := range result.Reasons {
 		fmt.Fprintln(w, "reason   ", reason)
 	}
+	printed := 0
+	canPrint := func() bool { return maxChanges == 0 || printed < maxChanges }
 	for _, path := range result.Added {
+		if !canPrint() {
+			break
+		}
 		fmt.Fprintln(w, "+", path)
+		printed++
 	}
 	for _, path := range result.Removed {
+		if !canPrint() {
+			break
+		}
 		fmt.Fprintln(w, "-", path)
+		printed++
 	}
 	for _, change := range result.Modified {
+		if !canPrint() {
+			break
+		}
 		fmt.Fprintf(w, "~ %s  %s -> %s\n", change.Path, shortDigest(change.BeforeSHA256), shortDigest(change.AfterSHA256))
+		printed++
+	}
+	totalChanges := len(result.Added) + len(result.Removed) + len(result.Modified)
+	if remaining := totalChanges - printed; remaining > 0 {
+		fmt.Fprintf(w, "… %d more changed path(s); rerun with --max-changes 0 to show all\n", remaining)
 	}
 }
 
@@ -196,7 +219,7 @@ func printUsage(w io.Writer) {
 
 Usage:
   samepack pack [--output FILE] [--format tar|tar.gz|zip] [--json] DIRECTORY
-  samepack compare [--json] BEFORE AFTER
+  samepack compare [--json] [--max-changes N] BEFORE AFTER
   samepack inspect [--json] ARCHIVE
   samepack version
 

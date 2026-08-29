@@ -34,3 +34,7 @@ content   sha256:bc93a3462a490cbc9a00d4b223ce18d828849d3c08ea7cbc496ba6c6699578f
 
 This receipt covers the archive produced by Samepack. Executables for different
 operating systems are expected to have different bytes.
+
+The verification workflow also builds the Samepack executable twice on each
+runner and compares the binaries before testing archive output. Its passing CI
+run is the current binary-reproducibility receipt for each commit.
