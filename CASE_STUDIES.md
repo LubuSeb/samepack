@@ -12,8 +12,15 @@ Inputs:
 - ripgrep 14.1.1 source as ZIP: 676,830 bytes
 - 269 inspected entries
 
-Samepack compared both archives in 56 ms on the development machine. The raw
-SHA-256 hashes differ, but their logical content root is identical:
+Across 20 process-level runs on the development machine, Samepack's median was
+50.81 ms. Hashing only the two compressed containers with PowerShell's
+`Get-FileHash` took 2.19 ms median, so the forensic comparison is 23.2 times
+slower than a raw checksum. That is the explicit tradeoff for decompressing and
+hashing 269 paths, building a format-independent content root, and explaining
+the difference. Samepack is for investigating a checksum mismatch, not replacing
+the cheap checksum that detects one.
+
+The raw SHA-256 hashes differ, but their logical content root is identical:
 
 ```text
 CONTENT IDENTICAL — raw bytes differ only in packaging metadata or encoding
