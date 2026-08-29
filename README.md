@@ -1,5 +1,7 @@
 # Samepack
 
+[![verify](https://github.com/LubuSeb/samepack/actions/workflows/verify.yml/badge.svg)](https://github.com/LubuSeb/samepack/actions/workflows/verify.yml)
+
 Two release archives have different hashes. Is it a harmless timestamp, a different file order, or an actual changed file?
 
 Samepack answers that question without extracting either archive. It can also build canonical `tar`, `tar.gz`, and `zip` releases whose bytes do not depend on source timestamps, file-system order, user IDs, or the host operating system.
@@ -20,6 +22,16 @@ This project is being built for the 2026 Zero Dependency Hackathon, Track A: Dev
 AI-assisted development: ChatGPT/Codex was used as development tooling.
 
 ## Build
+
+Download a standalone Windows, Linux, or macOS binary plus its checksum from
+[the v0.1.0 release](https://github.com/LubuSeb/samepack/releases/tag/v0.1.0), or
+install directly with Go:
+
+```sh
+go install github.com/LubuSeb/samepack/cmd/samepack@v0.1.0
+```
+
+To build the current source:
 
 ```sh
 go build -trimpath -o dist/samepack ./cmd/samepack
