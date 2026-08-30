@@ -9,6 +9,8 @@ import (
 
 type ChangedPath struct {
 	Path         string `json:"path"`
+	BeforeKind   string `json:"before_kind"`
+	AfterKind    string `json:"after_kind"`
 	BeforeSHA256 string `json:"before_sha256"`
 	AfterSHA256  string `json:"after_sha256"`
 	BeforeSize   int64  `json:"before_size"`
@@ -20,10 +22,17 @@ type MetadataChange struct {
 	Fields []string `json:"fields"`
 }
 
+type BehaviorChange struct {
+	Path             string `json:"path"`
+	BeforeExecutable bool   `json:"before_executable"`
+	AfterExecutable  bool   `json:"after_executable"`
+}
+
 type Comparison struct {
 	Classification     string           `json:"classification"`
 	ByteIdentical      bool             `json:"byte_identical"`
 	ContentIdentical   bool             `json:"content_identical"`
+	PortableIdentical  bool             `json:"portable_identical"`
 	Before             Snapshot         `json:"before"`
 	After              Snapshot         `json:"after"`
 	Reasons            []string         `json:"reasons"`
@@ -31,6 +40,7 @@ type Comparison struct {
 	Removed            []string         `json:"removed"`
 	Modified           []ChangedPath    `json:"modified"`
 	Metadata           []MetadataChange `json:"metadata"`
+	BehaviorModified   []BehaviorChange `json:"behavior_modified"`
 	OrderChanged       bool             `json:"order_changed"`
 	DirectoriesChanged bool             `json:"directory_entries_changed"`
 	StrippedRoots      []string         `json:"stripped_roots"`
@@ -55,6 +65,7 @@ func Compare(before, after Snapshot) Comparison {
 		Removed:          []string{},
 		Modified:         []ChangedPath{},
 		Metadata:         []MetadataChange{},
+		BehaviorModified: []BehaviorChange{},
 		Reasons:          []string{},
 		StrippedRoots:    strippedRoots,
 	}
@@ -94,10 +105,21 @@ func Compare(before, after Snapshot) Comparison {
 			if oldEntry.Kind != newEntry.Kind || oldEntry.Size != newEntry.Size || oldEntry.SHA256 != newEntry.SHA256 {
 				result.Modified = append(result.Modified, ChangedPath{
 					Path:         path,
+					BeforeKind:   oldEntry.Kind,
+					AfterKind:    newEntry.Kind,
 					BeforeSHA256: oldEntry.SHA256,
 					AfterSHA256:  newEntry.SHA256,
 					BeforeSize:   oldEntry.Size,
 					AfterSize:    newEntry.Size,
+				})
+			}
+			oldExecutable := oldEntry.Mode&0o111 != 0
+			newExecutable := newEntry.Mode&0o111 != 0
+			if oldEntry.Kind == "file" && newEntry.Kind == "file" && oldExecutable != newExecutable {
+				result.BehaviorModified = append(result.BehaviorModified, BehaviorChange{
+					Path:             path,
+					BeforeExecutable: oldExecutable,
+					AfterExecutable:  newExecutable,
 				})
 			}
 			fields := make([]string, 0, 2)
@@ -130,19 +152,25 @@ func Compare(before, after Snapshot) Comparison {
 		result.Reasons = append(result.Reasons, "entry timestamps changed")
 	}
 	if hasMetadataField(result.Metadata, "mode") {
-		result.Reasons = append(result.Reasons, "entry modes changed")
+		result.Reasons = append(result.Reasons, "entry permissions changed")
 	}
+	if len(result.BehaviorModified) > 0 {
+		result.Reasons = append(result.Reasons, "executable permissions changed")
+	}
+	result.PortableIdentical = result.ContentIdentical && len(result.BehaviorModified) == 0
 
 	switch {
 	case result.ByteIdentical:
 		result.Classification = "byte_identical"
-	case result.ContentIdentical:
+	case result.PortableIdentical:
 		result.Classification = "metadata_only"
 		if len(result.Reasons) == 0 {
 			result.Reasons = append(result.Reasons, "container encoding differs")
 		}
-	default:
+	case !result.ContentIdentical:
 		result.Classification = "content_changed"
+	default:
+		result.Classification = "behavior_changed"
 	}
 	return result
 }

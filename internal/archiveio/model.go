@@ -13,7 +13,21 @@ const (
 	maxEntries   = 100_000
 	maxEntrySize = int64(1 << 30) // 1 GiB
 	maxTotalSize = int64(4 << 30) // 4 GiB
+	maxPathBytes = 4_096
+	maxPathTotal = int64(32 << 20) // 32 MiB
 )
+
+type archiveLimits struct {
+	entries   int
+	entrySize int64
+	totalSize int64
+}
+
+var defaultArchiveLimits = archiveLimits{
+	entries:   maxEntries,
+	entrySize: maxEntrySize,
+	totalSize: maxTotalSize,
+}
 
 // Entry is the content and portable metadata Samepack observes for one path.
 type Entry struct {

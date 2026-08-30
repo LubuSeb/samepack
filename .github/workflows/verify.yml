@@ -46,6 +46,38 @@ jobs:
           path: proof/${{ runner.os }}-a.tar.gz
           if-no-files-found: error
 
+  adversarial-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Race detector
+        run: go test -race ./...
+      - name: Fuzz smoke - archive parsing
+        timeout-minutes: 2
+        run: go test ./internal/archiveio -run=^$ -fuzz=^FuzzInspectNeverPanics$ -fuzztime=10s -parallel=2
+      - name: Fuzz smoke - strict manifest decoding
+        timeout-minutes: 2
+        run: go test ./internal/archiveio -run=^$ -fuzz=^FuzzDecodeManifestStrict$ -fuzztime=10s -parallel=2
+      - name: Fuzz smoke - cross-format record and verify
+        timeout-minutes: 2
+        run: go test ./internal/archiveio -run=^$ -fuzz=^FuzzRecordVerifyCrossFormat$ -fuzztime=10s -parallel=2
+      - name: Fuzz smoke - exact mutation diagnosis
+        timeout-minutes: 2
+        run: go test ./internal/archiveio -run=^$ -fuzz=^FuzzVerifyPinpointsMutation$ -fuzztime=10s -parallel=2
+      - name: Record once and verify another archive format
+        shell: bash
+        run: |
+          mkdir -p proof
+          go run ./cmd/samepack pack --output proof/release.zip ./demo/release-v1
+          go run ./cmd/samepack pack --output proof/release.tar.gz ./demo/release-v1
+          go run ./cmd/samepack record --output proof/release.samepack.json proof/release.zip
+          go run ./cmd/samepack verify proof/release.samepack.json proof/release.tar.gz
+
   cross-os-proof:
     needs: test-and-pack
     runs-on: ubuntu-latest

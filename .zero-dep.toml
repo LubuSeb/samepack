@@ -1,2 +1,2 @@
 track = "A"
-pitch = "Explain why release archives differ, pinpoint changed files, and build byte-identical canonical archives."
+pitch = "Lock the files, not the compression: record a trusted portable archive manifest, then verify regenerated ZIP/TAR payloads without extracting to disk or retaining the original archive."

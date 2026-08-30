@@ -20,9 +20,19 @@ type sourceEntry struct {
 	info      os.FileInfo
 }
 
+type PackOptions struct {
+	Format             string
+	PreserveExecutable bool
+}
+
 // Pack creates a canonical archive from a directory and returns its inspected snapshot.
 func Pack(sourceDir, output, format string) (Snapshot, error) {
-	format, err := normalizeFormat(format, output)
+	return PackWithOptions(sourceDir, output, PackOptions{Format: format})
+}
+
+// PackWithOptions creates a canonical archive with an explicit mode policy.
+func PackWithOptions(sourceDir, output string, options PackOptions) (Snapshot, error) {
+	format, err := normalizeFormat(options.Format, output)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -42,12 +52,9 @@ func Pack(sourceDir, output, format string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("create temporary output: %w", err)
 	}
 	tempName := temp.Name()
-	ok := false
 	defer func() {
 		_ = temp.Close()
-		if !ok {
-			_ = os.Remove(tempName)
-		}
+		_ = os.Remove(tempName)
 	}()
 	if err := temp.Chmod(0o644); err != nil {
 		return Snapshot{}, fmt.Errorf("set output permissions: %w", err)
@@ -55,11 +62,11 @@ func Pack(sourceDir, output, format string) (Snapshot, error) {
 
 	switch format {
 	case "tar":
-		err = writeTAR(temp, entries)
+		err = writeTAR(temp, entries, options.PreserveExecutable)
 	case "tar.gz":
-		err = writeTGZ(temp, entries)
+		err = writeTGZ(temp, entries, options.PreserveExecutable)
 	case "zip":
-		err = writeZIP(temp, entries)
+		err = writeZIP(temp, entries, options.PreserveExecutable)
 	}
 	if err != nil {
 		return Snapshot{}, err
@@ -70,11 +77,15 @@ func Pack(sourceDir, output, format string) (Snapshot, error) {
 	if err := temp.Close(); err != nil {
 		return Snapshot{}, fmt.Errorf("close output: %w", err)
 	}
+	snapshot, err := Inspect(tempName)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("self-validate packed archive: %w", err)
+	}
 	if err := publishFile(tempName, output); err != nil {
 		return Snapshot{}, err
 	}
-	ok = true
-	return Inspect(output)
+	snapshot.Archive = output
+	return snapshot, nil
 }
 
 func collectSource(root string) ([]sourceEntry, error) {
@@ -92,6 +103,9 @@ func collectSource(root string) ([]sourceEntry, error) {
 
 	entries := make([]sourceEntry, 0)
 	caseFolded := make(map[string]string)
+	graphEntries := make([]Entry, 0)
+	var total int64
+	var pathTotal int64
 	err = filepath.WalkDir(absolute, func(localPath string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -121,8 +135,19 @@ func collectSource(root string) ([]sourceEntry, error) {
 		if previous, exists := caseFolded[folded]; exists && previous != name {
 			return fmt.Errorf("source contains case-colliding paths %q and %q", previous, name)
 		}
+		if err := addPathSize(name, &pathTotal); err != nil {
+			return err
+		}
+		kind := "directory"
+		if info.Mode().IsRegular() {
+			kind = "file"
+			if err := checkSize(info.Size(), &total); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
 		caseFolded[folded] = name
 		entries = append(entries, sourceEntry{localPath: localPath, name: name, info: info})
+		graphEntries = append(graphEntries, Entry{Path: name, Kind: kind})
 		if len(entries) > maxEntries {
 			return fmt.Errorf("source exceeds %d entries", maxEntries)
 		}
@@ -131,11 +156,14 @@ func collectSource(root string) ([]sourceEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("walk source: %w", err)
 	}
+	if err := validatePathGraph(graphEntries); err != nil {
+		return nil, fmt.Errorf("walk source: %w", err)
+	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 	return entries, nil
 }
 
-func writeTGZ(output io.Writer, entries []sourceEntry) error {
+func writeTGZ(output io.Writer, entries []sourceEntry, preserveExecutable bool) error {
 	gz, err := gzip.NewWriterLevel(output, gzip.BestCompression)
 	if err != nil {
 		return fmt.Errorf("create gzip writer: %w", err)
@@ -144,7 +172,7 @@ func writeTGZ(output io.Writer, entries []sourceEntry) error {
 	gz.Comment = ""
 	gz.ModTime = time.Unix(0, 0).UTC()
 	gz.OS = 255
-	if err := writeTAR(gz, entries); err != nil {
+	if err := writeTAR(gz, entries, preserveExecutable); err != nil {
 		_ = gz.Close()
 		return err
 	}
@@ -154,11 +182,11 @@ func writeTGZ(output io.Writer, entries []sourceEntry) error {
 	return nil
 }
 
-func writeTAR(output io.Writer, entries []sourceEntry) error {
+func writeTAR(output io.Writer, entries []sourceEntry, preserveExecutable bool) error {
 	w := tar.NewWriter(output)
 	for _, entry := range entries {
 		name := entry.name
-		mode := int64(0o644)
+		mode := canonicalFileMode(entry.info, preserveExecutable)
 		size := entry.info.Size()
 		typeFlag := byte(tar.TypeReg)
 		if entry.info.IsDir() {
@@ -188,7 +216,7 @@ func writeTAR(output io.Writer, entries []sourceEntry) error {
 		if !entry.info.Mode().IsRegular() {
 			continue
 		}
-		if err := writeSourceFile(w, entry); err != nil {
+		if err := writeSourceFile(w, entry, preserveExecutable); err != nil {
 			_ = w.Close()
 			return err
 		}
@@ -199,7 +227,7 @@ func writeTAR(output io.Writer, entries []sourceEntry) error {
 	return nil
 }
 
-func writeZIP(output io.Writer, entries []sourceEntry) error {
+func writeZIP(output io.Writer, entries []sourceEntry, preserveExecutable bool) error {
 	w := zip.NewWriter(output)
 	for _, entry := range entries {
 		name := entry.name
@@ -212,7 +240,7 @@ func writeZIP(output io.Writer, entries []sourceEntry) error {
 			header.Method = zip.Store
 			header.SetMode(os.ModeDir | 0o755)
 		} else {
-			header.SetMode(0o644)
+			header.SetMode(os.FileMode(canonicalFileMode(entry.info, preserveExecutable)))
 		}
 		writer, err := w.CreateHeader(header)
 		if err != nil {
@@ -220,7 +248,7 @@ func writeZIP(output io.Writer, entries []sourceEntry) error {
 			return fmt.Errorf("write zip header %s: %w", entry.name, err)
 		}
 		if entry.info.Mode().IsRegular() {
-			if err := writeSourceFile(writer, entry); err != nil {
+			if err := writeSourceFile(writer, entry, preserveExecutable); err != nil {
 				_ = w.Close()
 				return err
 			}
@@ -232,7 +260,14 @@ func writeZIP(output io.Writer, entries []sourceEntry) error {
 	return nil
 }
 
-func writeSourceFile(output io.Writer, entry sourceEntry) error {
+func canonicalFileMode(info os.FileInfo, preserveExecutable bool) int64 {
+	if preserveExecutable && info.Mode().Perm()&0o111 != 0 {
+		return 0o755
+	}
+	return 0o644
+}
+
+func writeSourceFile(output io.Writer, entry sourceEntry, preserveExecutable bool) error {
 	f, err := os.Open(entry.localPath)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", entry.name, err)
@@ -252,7 +287,7 @@ func writeSourceFile(output io.Writer, entry sourceEntry) error {
 	if err != nil {
 		return fmt.Errorf("restat %s: %w", entry.name, err)
 	}
-	if current.Size() != entry.info.Size() || !current.ModTime().Equal(entry.info.ModTime()) {
+	if current.Size() != entry.info.Size() || !current.ModTime().Equal(entry.info.ModTime()) || canonicalFileMode(current, preserveExecutable) != canonicalFileMode(entry.info, preserveExecutable) {
 		return fmt.Errorf("%s changed while packing", entry.name)
 	}
 	return nil
@@ -285,9 +320,6 @@ func normalizeFormat(format, output string) (string, error) {
 func publishFile(source, destination string) error {
 	if err := os.Link(source, destination); err != nil {
 		return fmt.Errorf("publish output: %w", err)
-	}
-	if err := os.Remove(source); err != nil {
-		return fmt.Errorf("remove temporary output: %w", err)
 	}
 	return nil
 }

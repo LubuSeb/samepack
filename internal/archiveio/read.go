@@ -11,20 +11,44 @@ import (
 	"io"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var errUnsupportedArchive = errors.New("unsupported archive: expected tar, tar.gz, tgz, or zip")
 
 // Inspect reads archive metadata and hashes content without extracting anything.
 func Inspect(filename string) (Snapshot, error) {
-	rawDigest, err := hashFile(filename)
+	return inspectWithLimits(filename, defaultArchiveLimits)
+}
+
+func inspectWithLimits(filename string, limits archiveLimits) (Snapshot, error) {
+	if limits.entries <= 0 || limits.entrySize <= 0 || limits.totalSize <= 0 || limits.totalSize < limits.entrySize {
+		return Snapshot{}, errors.New("invalid archive limits")
+	}
+	f, err := os.Open(filename)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("open: %w", err)
+	}
+	defer f.Close()
+	before, err := f.Stat()
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("stat: %w", err)
+	}
+	if !before.Mode().IsRegular() {
+		return Snapshot{}, errors.New("archive is not a regular file")
+	}
+	rawLimit, err := expandedTARLimit(limits)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if before.Size() > rawLimit {
+		return Snapshot{}, fmt.Errorf("archive file exceeds %d bytes", rawLimit)
+	}
 
-	format, err := detectFormat(filename)
+	format, err := detectFormat(f)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -33,14 +57,37 @@ func Inspect(filename string) (Snapshot, error) {
 	var order []string
 	switch format {
 	case "zip":
-		entries, order, err = readZIP(filename)
+		reader, zipErr := zip.NewReader(f, before.Size())
+		if zipErr != nil {
+			err = fmt.Errorf("zip directory: %w", zipErr)
+		} else {
+			entries, order, err = readZIP(reader, limits)
+		}
 	case "tar", "tar.gz":
-		entries, order, err = readTAR(filename, format == "tar.gz")
+		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+			err = fmt.Errorf("seek: %w", seekErr)
+		} else {
+			entries, order, err = readTAR(f, format == "tar.gz", limits)
+		}
 	default:
 		err = errUnsupportedArchive
 	}
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("inspect %s: %w", filename, err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return Snapshot{}, fmt.Errorf("seek for hash: %w", err)
+	}
+	rawDigest, err := hashReader(f)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("restat: %w", err)
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		return Snapshot{}, errors.New("archive changed while it was being inspected")
 	}
 
 	return Snapshot{
@@ -53,15 +100,9 @@ func Inspect(filename string) (Snapshot, error) {
 	}, nil
 }
 
-func detectFormat(filename string) (string, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return "", fmt.Errorf("open: %w", err)
-	}
-	defer f.Close()
-
+func detectFormat(source io.ReaderAt) (string, error) {
 	var magic [4]byte
-	n, err := io.ReadFull(f, magic[:])
+	n, err := source.ReadAt(magic[:], 0)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", fmt.Errorf("read header: %w", err)
 	}
@@ -77,17 +118,12 @@ func detectFormat(filename string) (string, error) {
 	return "", errUnsupportedArchive
 }
 
-func readTAR(filename string, compressed bool) ([]Entry, []string, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer f.Close()
-
-	var source io.Reader = f
+func readTAR(input io.Reader, compressed bool, limits archiveLimits) ([]Entry, []string, error) {
+	var source io.Reader = input
 	var gz *gzip.Reader
+	var err error
 	if compressed {
-		gz, err = gzip.NewReader(f)
+		gz, err = gzip.NewReader(input)
 		if err != nil {
 			return nil, nil, fmt.Errorf("gzip header: %w", err)
 		}
@@ -95,12 +131,19 @@ func readTAR(filename string, compressed bool) ([]Entry, []string, error) {
 		source = gz
 	}
 
-	reader := tar.NewReader(source)
+	expandedLimit, err := expandedTARLimit(limits)
+	if err != nil {
+		return nil, nil, err
+	}
+	bounded := &io.LimitedReader{R: source, N: expandedLimit + 1}
+	reader := tar.NewReader(bounded)
 	seen := make(map[string]struct{})
 	caseFolded := make(map[string]string)
 	entries := make([]Entry, 0)
 	order := make([]string, 0)
 	var total int64
+	var pathTotal int64
+	records := 0
 
 	for {
 		header, nextErr := reader.Next()
@@ -110,8 +153,9 @@ func readTAR(filename string, compressed bool) ([]Entry, []string, error) {
 		if nextErr != nil {
 			return nil, nil, fmt.Errorf("tar stream: %w", nextErr)
 		}
-		if len(entries) >= maxEntries {
-			return nil, nil, fmt.Errorf("archive exceeds %d entries", maxEntries)
+		records++
+		if records > limits.entries {
+			return nil, nil, fmt.Errorf("archive exceeds %d entries", limits.entries)
 		}
 		if isTARMetadata(header.Typeflag) {
 			continue
@@ -119,6 +163,12 @@ func readTAR(filename string, compressed bool) ([]Entry, []string, error) {
 
 		name, err := safeArchivePath(header.Name)
 		if err != nil {
+			return nil, nil, err
+		}
+		if header.Mode&0o7000 != 0 {
+			return nil, nil, fmt.Errorf("%s: privileged mode bits are unsupported", name)
+		}
+		if err := addPathSize(name, &pathTotal); err != nil {
 			return nil, nil, err
 		}
 		if err := registerPath(name, seen, caseFolded); err != nil {
@@ -132,7 +182,7 @@ func readTAR(filename string, compressed bool) ([]Entry, []string, error) {
 		case tar.TypeReg, tar.TypeRegA:
 			kind = "file"
 			size = header.Size
-			if err := checkSize(size, &total); err != nil {
+			if err := checkSizeWithLimits(size, &total, limits); err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", name, err)
 			}
 			digest, err = hashExactly(reader, size)
@@ -145,6 +195,9 @@ func readTAR(filename string, compressed bool) ([]Entry, []string, error) {
 		case tar.TypeSymlink:
 			kind = "symlink"
 			size = int64(len(header.Linkname))
+			if err := checkSizeWithLimits(size, &total, limits); err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", name, err)
+			}
 			digest = hashBytes([]byte(header.Linkname))
 		default:
 			return nil, nil, fmt.Errorf("%s: unsupported tar entry type %d", name, header.Typeflag)
@@ -160,7 +213,29 @@ func readTAR(filename string, compressed bool) ([]Entry, []string, error) {
 		})
 		order = append(order, name)
 	}
+	// tar.Reader stops at the logical end markers. Drain the bounded source so
+	// GZIP validates its checksum/footer and compressed trailing bombs cannot be
+	// accepted as a tiny archive without being charged to the expanded budget.
+	if _, err := io.Copy(io.Discard, bounded); err != nil {
+		return nil, nil, fmt.Errorf("tar trailer: %w", err)
+	}
+	if bounded.N == 0 {
+		return nil, nil, fmt.Errorf("expanded tar stream exceeds %d bytes", expandedLimit)
+	}
+	if err := validatePathGraph(entries); err != nil {
+		return nil, nil, err
+	}
 	return entries, order, nil
+}
+
+func expandedTARLimit(limits archiveLimits) (int64, error) {
+	const perRecordOverhead = int64(maxPathBytes + 2048)
+	const trailerAllowance = int64(2048)
+	records := int64(limits.entries)
+	if records > (int64(^uint64(0)>>1)-limits.totalSize-trailerAllowance-1)/perRecordOverhead {
+		return 0, errors.New("archive limits overflow expanded tar budget")
+	}
+	return limits.totalSize + records*perRecordOverhead + trailerAllowance, nil
 }
 
 func isTARMetadata(typeFlag byte) bool {
@@ -170,14 +245,9 @@ func isTARMetadata(typeFlag byte) bool {
 		typeFlag == tar.TypeGNULongLink
 }
 
-func readZIP(filename string) ([]Entry, []string, error) {
-	reader, err := zip.OpenReader(filename)
-	if err != nil {
-		return nil, nil, fmt.Errorf("zip directory: %w", err)
-	}
-	defer reader.Close()
-	if len(reader.File) > maxEntries {
-		return nil, nil, fmt.Errorf("archive exceeds %d entries", maxEntries)
+func readZIP(reader *zip.Reader, limits archiveLimits) ([]Entry, []string, error) {
+	if len(reader.File) > limits.entries {
+		return nil, nil, fmt.Errorf("archive exceeds %d entries", limits.entries)
 	}
 
 	seen := make(map[string]struct{})
@@ -185,6 +255,7 @@ func readZIP(filename string) ([]Entry, []string, error) {
 	entries := make([]Entry, 0, len(reader.File))
 	order := make([]string, 0, len(reader.File))
 	var total int64
+	var pathTotal int64
 	for _, file := range reader.File {
 		name, err := safeArchivePath(file.Name)
 		if err != nil {
@@ -193,8 +264,14 @@ func readZIP(filename string) ([]Entry, []string, error) {
 		if err := registerPath(name, seen, caseFolded); err != nil {
 			return nil, nil, err
 		}
+		if err := addPathSize(name, &pathTotal); err != nil {
+			return nil, nil, err
+		}
 
 		mode := file.Mode()
+		if mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+			return nil, nil, fmt.Errorf("%s: privileged mode bits are unsupported", name)
+		}
 		kind := "file"
 		var digest string
 		var size int64
@@ -204,29 +281,39 @@ func readZIP(filename string) ([]Entry, []string, error) {
 			digest = emptyDigest()
 		case mode&os.ModeSymlink != 0:
 			kind = "symlink"
-			if file.UncompressedSize64 > uint64(maxEntrySize) {
-				return nil, nil, fmt.Errorf("%s: entry exceeds %d bytes", name, maxEntrySize)
-			}
-			digest, size, err = hashZIPEntry(file)
-			if err != nil {
-				return nil, nil, fmt.Errorf("%s: %w", name, err)
-			}
-		default:
-			if file.UncompressedSize64 > uint64(maxEntrySize) {
-				return nil, nil, fmt.Errorf("%s: entry exceeds %d bytes", name, maxEntrySize)
+			if file.UncompressedSize64 > uint64(limits.entrySize) {
+				return nil, nil, fmt.Errorf("%s: entry exceeds %d bytes", name, limits.entrySize)
 			}
 			size = int64(file.UncompressedSize64)
-			if err := checkSize(size, &total); err != nil {
+			if err := checkSizeWithLimits(size, &total, limits); err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", name, err)
 			}
 			var actual int64
-			digest, actual, err = hashZIPEntry(file)
+			digest, actual, err = hashZIPEntry(file, limits.entrySize)
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", name, err)
 			}
 			if actual != size {
 				return nil, nil, fmt.Errorf("%s: declared size %d, read %d", name, size, actual)
 			}
+		case mode.IsRegular():
+			if file.UncompressedSize64 > uint64(limits.entrySize) {
+				return nil, nil, fmt.Errorf("%s: entry exceeds %d bytes", name, limits.entrySize)
+			}
+			size = int64(file.UncompressedSize64)
+			if err := checkSizeWithLimits(size, &total, limits); err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", name, err)
+			}
+			var actual int64
+			digest, actual, err = hashZIPEntry(file, limits.entrySize)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", name, err)
+			}
+			if actual != size {
+				return nil, nil, fmt.Errorf("%s: declared size %d, read %d", name, size, actual)
+			}
+		default:
+			return nil, nil, fmt.Errorf("%s: unsupported zip entry type %s", name, mode.Type())
 		}
 
 		entries = append(entries, Entry{
@@ -239,22 +326,25 @@ func readZIP(filename string) ([]Entry, []string, error) {
 		})
 		order = append(order, name)
 	}
+	if err := validatePathGraph(entries); err != nil {
+		return nil, nil, err
+	}
 	return entries, order, nil
 }
 
-func hashZIPEntry(file *zip.File) (string, int64, error) {
+func hashZIPEntry(file *zip.File, entryLimit int64) (string, int64, error) {
 	r, err := file.Open()
 	if err != nil {
 		return "", 0, err
 	}
 	defer r.Close()
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(r, maxEntrySize+1))
+	n, err := io.Copy(h, io.LimitReader(r, entryLimit+1))
 	if err != nil {
 		return "", n, err
 	}
-	if n > maxEntrySize {
-		return "", n, fmt.Errorf("entry exceeds %d bytes", maxEntrySize)
+	if n > entryLimit {
+		return "", n, fmt.Errorf("entry exceeds %d bytes", entryLimit)
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
@@ -262,6 +352,12 @@ func hashZIPEntry(file *zip.File) (string, int64, error) {
 func safeArchivePath(name string) (string, error) {
 	if name == "" {
 		return "", errors.New("archive contains an empty path")
+	}
+	if !utf8.ValidString(name) {
+		return "", errors.New("archive contains a path that is not valid UTF-8")
+	}
+	if len(name) > maxPathBytes {
+		return "", fmt.Errorf("archive path exceeds %d bytes", maxPathBytes)
 	}
 	if strings.Contains(name, "\\") || hasControlCharacter(name) {
 		return "", fmt.Errorf("unsafe archive path %q", name)
@@ -272,6 +368,15 @@ func safeArchivePath(name string) (string, error) {
 		return "", fmt.Errorf("unsafe archive path %q", name)
 	}
 	return cleaned, nil
+}
+
+func addPathSize(name string, total *int64) error {
+	size := int64(len(name))
+	if *total > maxPathTotal-size {
+		return fmt.Errorf("archive paths exceed %d total bytes", maxPathTotal)
+	}
+	*total += size
+	return nil
 }
 
 func hasControlCharacter(value string) bool {
@@ -300,15 +405,82 @@ func registerPath(name string, seen map[string]struct{}, caseFolded map[string]s
 	return nil
 }
 
+func validatePathGraph(entries []Entry) error {
+	type graphPath struct {
+		original string
+		folded   string
+		kind     string
+	}
+	records := make([]graphPath, len(entries))
+	for index, entry := range entries {
+		// NUL sorts before every accepted path character, so a directory's whole
+		// subtree is contiguous and immediately follows the directory itself.
+		records[index] = graphPath{
+			original: entry.Path,
+			folded:   strings.ReplaceAll(strings.ToLower(entry.Path), "/", "\x00"),
+			kind:     entry.Kind,
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].folded == records[j].folded {
+			return records[i].original < records[j].original
+		}
+		return records[i].folded < records[j].folded
+	})
+	for index := 1; index < len(records); index++ {
+		previous := records[index-1]
+		current := records[index]
+		if caseVariedComponent(previous.original, previous.folded, current.original, current.folded) {
+			return fmt.Errorf("case-colliding archive path components in %q and %q", previous.original, current.original)
+		}
+		if previous.kind != "directory" && len(current.folded) > len(previous.folded) &&
+			strings.HasPrefix(current.folded, previous.folded) && current.folded[len(previous.folded)] == 0 {
+			return fmt.Errorf("archive path %q is nested below %s %q", current.original, previous.kind, previous.original)
+		}
+	}
+	return nil
+}
+
+func caseVariedComponent(left, foldedLeft, right, foldedRight string) bool {
+	leftStart, foldedLeftStart := 0, 0
+	rightStart, foldedRightStart := 0, 0
+	for leftStart < len(left) && rightStart < len(right) {
+		leftEnd := componentEnd(left, leftStart, '/')
+		rightEnd := componentEnd(right, rightStart, '/')
+		foldedLeftEnd := componentEnd(foldedLeft, foldedLeftStart, 0)
+		foldedRightEnd := componentEnd(foldedRight, foldedRightStart, 0)
+		if foldedLeft[foldedLeftStart:foldedLeftEnd] != foldedRight[foldedRightStart:foldedRightEnd] {
+			return false
+		}
+		if left[leftStart:leftEnd] != right[rightStart:rightEnd] {
+			return true
+		}
+		leftStart, foldedLeftStart = leftEnd+1, foldedLeftEnd+1
+		rightStart, foldedRightStart = rightEnd+1, foldedRightEnd+1
+	}
+	return false
+}
+
+func componentEnd(value string, start int, separator byte) int {
+	if offset := strings.IndexByte(value[start:], separator); offset >= 0 {
+		return start + offset
+	}
+	return len(value)
+}
+
 func checkSize(size int64, total *int64) error {
+	return checkSizeWithLimits(size, total, defaultArchiveLimits)
+}
+
+func checkSizeWithLimits(size int64, total *int64, limits archiveLimits) error {
 	if size < 0 {
 		return errors.New("negative entry size")
 	}
-	if size > maxEntrySize {
-		return fmt.Errorf("entry exceeds %d bytes", maxEntrySize)
+	if size > limits.entrySize {
+		return fmt.Errorf("entry exceeds %d bytes", limits.entrySize)
 	}
-	if *total > maxTotalSize-size {
-		return fmt.Errorf("archive exceeds %d total bytes", maxTotalSize)
+	if *total > limits.totalSize-size {
+		return fmt.Errorf("archive exceeds %d total bytes", limits.totalSize)
 	}
 	*total += size
 	return nil
@@ -323,14 +495,9 @@ func hashExactly(r io.Reader, size int64) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func hashFile(filename string) (string, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return "", fmt.Errorf("open: %w", err)
-	}
-	defer f.Close()
+func hashReader(source io.Reader) (string, error) {
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, source); err != nil {
 		return "", fmt.Errorf("hash: %w", err)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil

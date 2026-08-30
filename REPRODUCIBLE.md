@@ -23,6 +23,11 @@ samepack-linux-amd64 pack --output linux.tar.gz demo/release-v1
 samepack.exe compare windows.tar.gz linux.tar.gz
 ```
 
+These commands use the default reproducible mode: regular files are normalized
+to `0644` and directories to `0755`. `--preserve-executable` is an explicit
+alternative for releases where executable status must be retained, but it is
+not covered by this cross-filesystem byte-identity claim.
+
 The comparison result was:
 
 ```text
@@ -35,6 +40,5 @@ content   sha256:bc93a3462a490cbc9a00d4b223ce18d828849d3c08ea7cbc496ba6c6699578f
 This receipt covers the archive produced by Samepack. Executables for different
 operating systems are expected to have different bytes.
 
-The verification workflow also builds the Samepack executable twice on each
-runner and compares the binaries before testing archive output. Its passing CI
-run is the current binary-reproducibility receipt for each commit.
+On each passing workflow run, Samepack builds the executable twice per runner
+and requires byte equality before checking reproducible archive output.

@@ -1,64 +1,113 @@
-# Five-minute demo
+# 2.5–3 minute judge demo
 
-This is the shortest path through Samepack's user value and hackathon proof.
-It is intentionally a terminal demo: Samepack is a release-engineering CLI and
-its exit codes and stdout are part of the product.
+The story is one sentence: **lock the files, not the compression**. Show a
+checksum mismatch, save a trusted portable baseline, verify a differently
+packed archive, then make the verifier fail on a real payload change.
 
-## 1. The problem (30 seconds)
+## Prepare before recording
 
-Open with two archives whose SHA-256 values differ. A raw hash cannot say
-whether the payload changed or whether a packer merely changed timestamps,
-entry order, modes, or container format.
-
-## 2. Harmless difference (60 seconds)
+Run these commands from a clean checkout. They create fresh artifacts in a
+unique temporary directory so Samepack's no-overwrite protection remains part
+of the demonstration.
 
 ```powershell
-go build -trimpath -o dist\samepack.exe .\cmd\samepack
-.\dist\samepack.exe pack --output dist\demo-v1.tar.gz .\demo\release-v1
-.\dist\samepack.exe pack --output dist\demo-v1.zip --format zip .\demo\release-v1
-.\dist\samepack.exe compare dist\demo-v1.tar.gz dist\demo-v1.zip
+$demo = Join-Path $env:TEMP ("samepack-judge-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $demo | Out-Null
+$samepack = Join-Path $demo "samepack.exe"
+
+go build -trimpath -o $samepack .\cmd\samepack
+& $samepack pack --output (Join-Path $demo "release-v1.zip") --format zip .\demo\release-v1
+& $samepack pack --output (Join-Path $demo "release-v1.tar.gz") --format tar.gz .\demo\release-v1
+& $samepack pack --output (Join-Path $demo "release-v2-changed.tar.gz") --format tar.gz .\demo\release-v2-changed
 ```
 
-The raw hashes differ, but Samepack returns `0`, prints one shared logical
-content hash, and explains the archive-format and timestamp differences.
+Keep the terminal font large. Clear the terminal before the timed flow.
 
-## 3. Real payload change (60 seconds)
+## 0:00–0:25 — The checksum tells us only that bytes changed
 
 ```powershell
-.\dist\samepack.exe pack --output dist\demo-v2.tar.gz .\demo\release-v2-changed
-.\dist\samepack.exe compare dist\demo-v1.tar.gz dist\demo-v2.tar.gz
+Get-FileHash (Join-Path $demo "release-v1.zip"), (Join-Path $demo "release-v1.tar.gz")
 ```
 
-Samepack returns `3` and identifies `SECURITY.txt` as added and
-`config/app.json` as modified. Nothing is extracted to disk.
+The SHA-256 values differ. Say: “That could be different compression, or it
+could be a changed release file. A raw checksum cannot distinguish them.”
 
-## 4. Reproducible output (60 seconds)
+## 0:25–1:05 — Record once, verify without the original
 
-Show the passing `cross-os-proof` job in GitHub Actions. Windows and Linux each
-pack the fixture twice after a source timestamp change. The final job downloads
-both outputs and runs `sha256sum` plus `cmp`.
+```powershell
+& $samepack record --output (Join-Path $demo "release.samepack.json") (Join-Path $demo "release-v1.zip")
+& $samepack verify (Join-Path $demo "release.samepack.json") (Join-Path $demo "release-v1.tar.gz")
+```
 
-The published local receipt is [`REPRODUCIBLE.md`](REPRODUCIBLE.md).
+Point to `PAYLOAD VERIFIED`, the different recorded and observed artifact
+hashes, and the shared payload hash. Say: “Verification receives the manifest
+and candidate TAR.GZ only. It does not reopen or extract the ZIP.”
 
-## 5. Zero-dependency receipts (45 seconds)
+Open the first few lines of the receipt:
+
+```powershell
+Get-Content (Join-Path $demo "release.samepack.json") -TotalCount 18
+```
+
+Point out the versioned algorithm and readable path records. The manifest is
+small enough to review, commit, or sign.
+
+## 1:05–1:40 — Change one file and fail precisely
+
+```powershell
+& $samepack verify (Join-Path $demo "release.samepack.json") (Join-Path $demo "release-v2-changed.tar.gz")
+$LASTEXITCODE
+```
+
+The output names the added `SECURITY.txt`, the modified `config/app.json`, and
+returns `3`. Say: “Samepack also fails on file-kind and executable changes;
+read/write permission noise is normalized.”
+
+## 1:40–2:15 — Replace the toy claim with real evidence
+
+```powershell
+Get-Content .\CORPUS.md -TotalCount 24
+```
+
+Land on the numbers:
+
+- 18 unrelated repositories
+- 36 GitHub-generated archives
+- 743.1 MiB compressed input
+- 124,356 file and symlink paths
+- all 18 outer hash pairs differed
+- all 18 portable roots matched
+
+Show [`CORPUS.json`](CORPUS.json) briefly. It contains immutable commit URLs and
+both input hashes for every result; it is a receipt, not a screenshot.
+
+## 2:15–2:45 — Prove the constraint and state the boundary
 
 ```powershell
 go list -m all
 go test ./...
-go vet ./...
 ```
 
-The module command prints only `github.com/LubuSeb/samepack`. Then show the
-empty `require` section in `go.mod`, the 12 real substitutions in `STDLIB.md`,
-and the safety tests for traversal, control characters, malformed archives,
-case collisions, symlinks, size caps, and no-overwrite publication.
+`go list -m all` prints only `github.com/LubuSeb/samepack`. Mention that
+recording and verification are built from `archive/tar`, `archive/zip`,
+`compress/gzip`, `crypto/sha256`, and `encoding/json`; no shell tools, cloud
+services, or third-party modules are required.
 
-## 6. Real-world evidence and boundary (45 seconds)
+Close with the honest boundary:
 
-Close on [`CASE_STUDIES.md`](CASE_STUDIES.md): the same ripgrep 14.1.1 source
-tag in GitHub TAR.GZ and ZIP is correctly classified as identical content, while
-14.1.0 versus 14.1.1 produces one addition, one removal, and 39 modified paths.
+> Samepack proves that an archive matches the manifest you trust. It does not
+> authenticate the publisher, so commit or sign that manifest through your
+> normal release process.
 
-Be explicit about the boundary: Samepack proves payload equality and explains
-packaging differences. It does not authenticate the producer; release hashes
-should still be signed through the user's normal release process.
+## Optional 15-second appendix
+
+If time remains, show the secondary commands only:
+
+```powershell
+& $samepack compare (Join-Path $demo "release-v1.zip") (Join-Path $demo "release-v1.tar.gz")
+& $samepack inspect (Join-Path $demo "release-v1.tar.gz")
+```
+
+Mention that `pack` also creates byte-reproducible TAR, TAR.GZ, and ZIP outputs
+for the same representable source tree and Go toolchain; the cross-OS receipt
+is in [`REPRODUCIBLE.md`](REPRODUCIBLE.md).
