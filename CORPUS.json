@@ -3,6 +3,8 @@
   "generated_at_utc": "2026-08-30T10:18:17Z",
   "samepack_version": "0.2.0",
   "go_version": "go version go1.26.5 windows/amd64",
+  "implementation_commit": "6cd9de15d067084f95ef4411c7e1607612a962fa",
+  "reverified_at_utc": "2026-08-30T11:07:28Z",
   "pairs": 18,
   "archives": 36,
   "total_compressed_bytes": 779161169,
