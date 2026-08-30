@@ -2,6 +2,9 @@
 
 [![verify](https://github.com/LubuSeb/samepack/actions/workflows/verify.yml/badge.svg)](https://github.com/LubuSeb/samepack/actions/workflows/verify.yml)
 
+[Watch the three-minute demo](https://vimeo.com/1222477449) ·
+[Download v0.2.0](https://github.com/LubuSeb/samepack/releases/tag/v0.2.0)
+
 ## Lock the files, not the compression
 
 GitHub can regenerate a source archive with different compression. Its SHA-256
@@ -69,9 +72,16 @@ go build -trimpath -o dist/samepack ./cmd/samepack
 There is no dependency download step. [`go.mod`](go.mod) contains no `require`
 block, and [`deps-proof.txt`](deps-proof.txt) contains only this module.
 
-Manifest-capable prebuilt binaries may be downloaded from
-[the latest release](https://github.com/LubuSeb/samepack/releases/latest) once a
-corresponding release is published. Until then, build the current source above.
+Prebuilt v0.2.0 binaries for Windows, Linux, and macOS are available from the
+[v0.2.0 release](https://github.com/LubuSeb/samepack/releases/tag/v0.2.0), with
+SHA-256 checksums. Raw Linux and macOS downloads may need `chmod +x` before
+execution.
+
+The Go toolchain can also install the tagged command directly:
+
+```sh
+go install github.com/LubuSeb/samepack/cmd/samepack@v0.2.0
+```
 
 ## Record once, verify later
 
@@ -190,6 +200,8 @@ show all paths. JSON verification output is complete and untruncated.
 
 ## Evidence index
 
+- [Three-minute public demo](https://vimeo.com/1222477449): problem, successful
+  verification, exact mismatch, corpus proof, and trust boundary
 - [`CASE_STUDIES.md`](CASE_STUDIES.md): real corpus results, negative proof, and
   the archive compatibility bug the work exposed
 - [`DEMO.md`](DEMO.md): the 2.5–3 minute judge flow
